@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "web-search": {
+      "command": "node",
+      "args": [
+        "C:\\Files\\git\\mcp-web-search\\dist\\index.js"
+      ],
+      "env": {
+        "STEALTH_ENABLED": "true",
+        "HEADLESS": "true",
+        "SERPER_API_KEY": "",
+        "BING_API_KEY": "",
+        "PROXY_LIST": "",
+        "MAX_RESULTS": "10",
+        "MAX_CONTENT_LENGTH": "8000"
+      }
+    }
+  }
+}
