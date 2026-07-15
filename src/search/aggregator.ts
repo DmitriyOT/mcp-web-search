@@ -1,18 +1,22 @@
-import { DuckDuckGoProvider } from "./duckduckgo.js";
-import { SerperProvider } from "./serper.js";
-import { BingProvider } from "./bing.js";
 import { config } from "../config.js";
+import type { SearchOptions, SearchResult } from "../types.js";
 import { MemoryCache, Semaphore } from "../utils/index.js";
 import type { SearchProvider } from "./base.js";
-import type { SearchResult, SearchOptions } from "../types.js";
+import { BingProvider } from "./bing.js";
+import { DuckDuckGoProvider } from "./duckduckgo.js";
+import { SerperProvider } from "./serper.js";
 
 export class SearchAggregator {
   private providers: SearchProvider[];
   private cache: MemoryCache<SearchResult[]>;
   private semaphore: Semaphore;
 
-  constructor() {
-    this.providers = [new SerperProvider(), new BingProvider(), new DuckDuckGoProvider()];
+  constructor(providers?: SearchProvider[]) {
+    this.providers = providers ?? [
+      new SerperProvider(),
+      new BingProvider(),
+      new DuckDuckGoProvider(),
+    ];
     this.cache = new MemoryCache<SearchResult[]>(config.cacheTtl * 1000);
     this.semaphore = new Semaphore(config.maxConcurrent);
   }
@@ -32,7 +36,7 @@ export class SearchAggregator {
         if (!provider) {
           throw new Error(`Unknown provider: ${providerName}`);
         }
-        return provider.search(options);
+        return dedupeResults(await provider.search(options));
       }
 
       // Auto: try premium APIs first, fallback to DuckDuckGo
@@ -41,7 +45,7 @@ export class SearchAggregator {
         try {
           const results = await provider.search(options);
           if (results.length > 0) {
-            return results;
+            return dedupeResults(results);
           }
         } catch (err) {
           errors.push(`${provider.name}: ${(err as Error).message}`);
@@ -63,4 +67,18 @@ export class SearchAggregator {
       r: options.recencyDays,
     });
   }
+}
+
+function dedupeResults(results: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+  return results.filter((r) => {
+    try {
+      const normalized = new URL(r.url).toString().replace(/\/$/, "");
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    } catch {
+      return true;
+    }
+  });
 }

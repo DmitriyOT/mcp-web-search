@@ -1,5 +1,6 @@
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
+
 import type { FetchedContent } from "../types.js";
 
 const turndown = new TurndownService({
@@ -8,8 +9,41 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
 });
 
-// Keep only meaningful elements
-turndown.remove(["script", "style", "noscript", "nav", "footer", "aside", "header"]);
+// Remove noisy elements
+turndown.remove([
+  "script",
+  "style",
+  "noscript",
+  "nav",
+  "footer",
+  "aside",
+  "header",
+  "form",
+  "button",
+  "input",
+  "select",
+  "textarea",
+]);
+
+const NOISE_SELECTORS = [
+  '[class*="cookie"]',
+  '[id*="cookie"]',
+  '[class*="consent"]',
+  '[id*="consent"]',
+  '[class*="gdpr"]',
+  '[id*="gdpr"]',
+  '[class*="newsletter"]',
+  '[id*="newsletter"]',
+  '[class*="popup"]',
+  '[id*="popup"]',
+  '[class*="modal"]',
+  '[id*="modal"]',
+  '[class*="overlay"]',
+  '[class*="ad"]',
+  '[id*="ad"]',
+  '[class*="social"]',
+  '[class*="share"]',
+];
 
 export interface ExtractOptions {
   includeImages?: boolean;
@@ -21,11 +55,7 @@ export function extractFromHtml(
   html: string,
   options: ExtractOptions = {}
 ): FetchedContent {
-  const {
-    document,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    window,
-  } = parseHTML(html);
+  const { document, window } = parseHTML(html);
 
   const title =
     document.querySelector("title")?.textContent?.trim() ||
@@ -49,17 +79,16 @@ export function extractFromHtml(
   const author = getMeta("author") || getMeta("article:author");
   const keywords = getMeta("keywords");
   const date =
-    getMeta("article:published_time") ||
-    getMeta("datePublished") ||
-    getMeta("published_time");
+    getMeta("article:published_time") || getMeta("datePublished") || getMeta("published_time");
 
-  // Prefer article/main content, fall back to body
-  const contentRoot =
-    document.querySelector("article") ||
-    document.querySelector("main") ||
-    document.querySelector('[role="main"]') ||
-    document.body;
+  // Remove noise before scoring
+  for (const selector of NOISE_SELECTORS) {
+    for (const el of Array.from(document.querySelectorAll(selector))) {
+      el.remove();
+    }
+  }
 
+  const contentRoot = findContentRoot(document);
   let content = contentRoot ? turndown.turndown(contentRoot.innerHTML).trim() : "";
 
   if (options.includeImages) {
@@ -69,7 +98,6 @@ export function extractFromHtml(
     }
   }
 
-  // Clean up whitespace
   content = content
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]+/g, " ")
@@ -92,6 +120,41 @@ export function extractFromHtml(
       date: date ? date.split("T")[0] : undefined,
     },
   };
+}
+
+function findContentRoot(document: Document): Element | null {
+  // Prefer semantic markers
+  const semantic =
+    document.querySelector("article") ||
+    document.querySelector("main") ||
+    document.querySelector('[role="main"]');
+  if (semantic) return semantic;
+
+  // Readability-like scoring
+  let best: Element | null = document.body;
+  let bestScore = 0;
+
+  for (const el of Array.from(document.querySelectorAll("div, section"))) {
+    const text = el.textContent || "";
+    const textLength = text.trim().length;
+    if (textLength < 200) continue;
+
+    const linkText = Array.from(el.querySelectorAll("a"))
+      .map((a) => a.textContent || "")
+      .join("").length;
+    const linkDensity = textLength > 0 ? linkText / textLength : 0;
+
+    const paragraphs = el.querySelectorAll("p").length;
+    const commas = (text.match(/,/g) || []).length;
+
+    const score = textLength * (1 - linkDensity) + paragraphs * 100 + commas * 10;
+    if (score > bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  }
+
+  return best;
 }
 
 function collectImages(root: Element | null, pageUrl: string): string[] {

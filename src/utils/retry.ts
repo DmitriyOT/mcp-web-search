@@ -5,10 +5,7 @@ export interface RetryOptions {
   shouldRetry?: (error: Error, attempt: number) => boolean;
 }
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions = {}
-): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const retries = options.retries ?? 2;
   const minDelay = options.minDelay ?? 500;
   const maxDelay = options.maxDelay ?? 3000;
@@ -25,10 +22,7 @@ export async function withRetry<T>(
         throw lastError;
       }
       const jitter = Math.random();
-      const delay = Math.min(
-        minDelay * 2 ** attempt + jitter * (maxDelay - minDelay),
-        maxDelay
-      );
+      const delay = Math.min(minDelay * 2 ** attempt + jitter * (maxDelay - minDelay), maxDelay);
       await new Promise((resolve) => setTimeout(resolve, Math.round(delay)));
     }
   }

@@ -1,7 +1,7 @@
-import { SearchProvider } from "./base.js";
 import { config } from "../config.js";
-import { withRetry, isAllowedUrl } from "../utils/index.js";
-import type { SearchResult, SearchOptions } from "../types.js";
+import type { SearchOptions, SearchResult } from "../types.js";
+import { isAllowedUrl, withRetry } from "../utils/index.js";
+import { SearchProvider } from "./base.js";
 
 export class DuckDuckGoProvider extends SearchProvider {
   name = "duckduckgo";
@@ -19,15 +19,18 @@ export class DuckDuckGoProvider extends SearchProvider {
     const url = new URL("https://html.duckduckgo.com/html/");
     url.searchParams.set("q", options.query);
     url.searchParams.set("kl", "us-en");
+    if (options.recencyDays) {
+      url.searchParams.set("df", recencyToDf(options.recencyDays));
+    }
 
     const res = await fetch(url.toString(), {
       headers: {
         "User-Agent": this.getRandomUA(),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
+        DNT: "1",
+        Connection: "keep-alive",
       },
     });
 
@@ -110,4 +113,11 @@ export class DuckDuckGoProvider extends SearchProvider {
     ];
     return uas[Math.floor(Math.random() * uas.length)];
   }
+}
+
+function recencyToDf(days: number): string {
+  if (days <= 1) return "d";
+  if (days <= 7) return "w";
+  if (days <= 30) return "m";
+  return "y";
 }

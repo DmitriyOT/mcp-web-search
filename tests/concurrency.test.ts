@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
 import { Semaphore } from "../src/utils/concurrency.js";
 
 describe("Semaphore", () => {

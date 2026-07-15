@@ -1,7 +1,7 @@
-import { SearchProvider } from "./base.js";
 import { config } from "../config.js";
+import type { SearchOptions, SearchResult } from "../types.js";
 import { withRetry } from "../utils/index.js";
-import type { SearchResult, SearchOptions } from "../types.js";
+import { SearchProvider } from "./base.js";
 
 export class BingProvider extends SearchProvider {
   name = "bing";

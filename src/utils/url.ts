@@ -24,11 +24,7 @@ export function isAllowedUrl(input: string): boolean {
   }
 
   const hostname = url.hostname.toLowerCase();
-  if (
-    hostname === "localhost" ||
-    hostname.endsWith(".localhost") ||
-    hostname === "[::1]"
-  ) {
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]") {
     return false;
   }
 

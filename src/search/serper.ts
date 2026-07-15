@@ -1,7 +1,7 @@
-import { SearchProvider } from "./base.js";
 import { config } from "../config.js";
+import type { SearchOptions, SearchResult } from "../types.js";
 import { withRetry } from "../utils/index.js";
-import type { SearchResult, SearchOptions } from "../types.js";
+import { SearchProvider } from "./base.js";
 
 export class SerperProvider extends SearchProvider {
   name = "serper";
@@ -39,6 +39,7 @@ export class SerperProvider extends SearchProvider {
         num,
         hl: "en",
         gl: "us",
+        ...(options.recencyDays ? { tbs: recencyToTbs(options.recencyDays) } : {}),
       }),
     });
 
@@ -63,4 +64,12 @@ export class SerperProvider extends SearchProvider {
       source: "Serper/Google",
     }));
   }
+}
+
+function recencyToTbs(days: number): string {
+  if (days <= 1) return "qdr:d";
+  if (days <= 7) return "qdr:w";
+  if (days <= 30) return "qdr:m";
+  if (days <= 365) return "qdr:y";
+  return "qdr:y";
 }

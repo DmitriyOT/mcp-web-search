@@ -2,9 +2,7 @@
   "mcpServers": {
     "web-search": {
       "command": "node",
-      "args": [
-        "C:\\Files\\git\\mcp-web-search\\dist\\index.js"
-      ],
+      "args": ["C:\\Files\\git\\mcp-web-search\\dist\\index.js"],
       "env": {
         "STEALTH_ENABLED": "true",
         "HEADLESS": "true",

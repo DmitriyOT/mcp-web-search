@@ -8,34 +8,38 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { SearchAggregator } from "./search/aggregator.js";
-import { fetchUrl, formatForLLM } from "./fetcher/index.js";
-import { browserManager } from "./fetcher/browser.js";
+
 import { config } from "./config.js";
-import { Semaphore } from "./utils/index.js";
+import { browserManager } from "./fetcher/browser.js";
+import { fetchUrl, formatForLLM } from "./fetcher/index.js";
+import { SearchAggregator } from "./search/aggregator.js";
+import { logger, Semaphore } from "./utils/index.js";
 
 const searchAggregator = new SearchAggregator();
 const fetchSemaphore = new Semaphore(config.maxConcurrent);
 
+const MAX_QUERY_LENGTH = 500;
+const MAX_URL_LENGTH = 2048;
+
 // Schemas
 const WebSearchSchema = z.object({
-  query: z.string().min(1).describe("Search query"),
+  query: z.string().min(1).max(MAX_QUERY_LENGTH).describe("Search query"),
   num_results: z.number().int().min(1).max(50).optional().default(10),
   provider: z.enum(["auto", "duckduckgo", "serper", "bing"]).optional().default("auto"),
-  recency_days: z.number().int().optional(),
+  recency_days: z.number().int().min(1).optional(),
 });
 
 const FetchUrlSchema = z.object({
-  url: z.string().url().describe("URL to fetch"),
-  max_length: z.number().int().optional().default(8000),
+  url: z.string().url().max(MAX_URL_LENGTH).describe("URL to fetch"),
+  max_length: z.number().int().min(1).optional().default(8000),
   include_images: z.boolean().optional().default(false),
 });
 
 const SearchAndFetchSchema = z.object({
-  query: z.string().min(1).describe("Search query"),
+  query: z.string().min(1).max(MAX_QUERY_LENGTH).describe("Search query"),
   num_results: z.number().int().min(1).max(20).optional().default(5),
   fetch_content: z.boolean().optional().default(true),
-  max_content_length: z.number().int().optional().default(5000),
+  max_content_length: z.number().int().min(1).optional().default(5000),
   include_images: z.boolean().optional().default(false),
 });
 
@@ -50,7 +54,11 @@ const TOOLS: Tool[] = [
       properties: {
         query: { type: "string", description: "Search query" },
         num_results: { type: "number", description: "Number of results (1-50)", default: 10 },
-        provider: { type: "string", enum: ["auto", "duckduckgo", "serper", "bing"], default: "auto" },
+        provider: {
+          type: "string",
+          enum: ["auto", "duckduckgo", "serper", "bing"],
+          default: "auto",
+        },
         recency_days: { type: "number", description: "Limit results to recent N days" },
       },
       required: ["query"],
@@ -64,8 +72,16 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         url: { type: "string", description: "URL to fetch" },
-        max_length: { type: "number", description: "Maximum content length in characters", default: 8000 },
-        include_images: { type: "boolean", description: "Include image references", default: false },
+        max_length: {
+          type: "number",
+          description: "Maximum content length in characters",
+          default: 8000,
+        },
+        include_images: {
+          type: "boolean",
+          description: "Include image references",
+          default: false,
+        },
       },
       required: ["url"],
     },
@@ -78,10 +94,22 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query" },
-        num_results: { type: "number", description: "Number of results to fetch (1-20)", default: 5 },
-        fetch_content: { type: "boolean", description: "Whether to fetch full page content", default: true },
+        num_results: {
+          type: "number",
+          description: "Number of results to fetch (1-20)",
+          default: 5,
+        },
+        fetch_content: {
+          type: "boolean",
+          description: "Whether to fetch full page content",
+          default: true,
+        },
         max_content_length: { type: "number", description: "Max length per page", default: 5000 },
-        include_images: { type: "boolean", description: "Include image references from pages", default: false },
+        include_images: {
+          type: "boolean",
+          description: "Include image references from pages",
+          default: false,
+        },
       },
       required: ["query"],
     },
@@ -151,10 +179,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (!parsed.fetch_content) {
         const output = searchResults
-          .map(
-            (r, i) =>
-              `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`
-          )
+          .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
           .join("\n\n");
         return {
           content: [{ type: "text", text: output || "No results found." }],
@@ -212,11 +237,11 @@ process.on("SIGTERM", async () => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("MCP Web Search server running on stdio");
+  logger.info("MCP Web Search server running on stdio");
 }
 
 main().catch(async (err) => {
-  console.error("Fatal error:", err);
+  logger.error("Fatal error", { error: String(err) });
   await browserManager.close();
   process.exit(1);
 });
