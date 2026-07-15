@@ -15,6 +15,8 @@ export interface FetchedContent {
     author?: string;
     description?: string;
     keywords?: string;
+    structuredData?: unknown[];
+    links?: { text: string; url: string }[];
   };
 }
 
@@ -29,4 +31,5 @@ export interface FetchOptions {
   url: string;
   maxLength?: number;
   includeImages?: boolean;
+  includeLinks?: boolean;
 }

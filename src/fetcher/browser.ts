@@ -163,6 +163,19 @@ export class BrowserManager {
     Object.defineProperty(nav, "languages", { get: () => [fingerprint.locale, "en"] });
     Object.defineProperty(nav, "webdriver", { get: () => undefined });
 
+    // Override timezone
+    const targetTz = fingerprint.timezone;
+    const originalIntl = Intl.DateTimeFormat;
+    // @ts-expect-error overriding Intl constructor
+    Intl.DateTimeFormat = function (
+      locales?: string | string[],
+      options?: Intl.DateTimeFormatOptions
+    ) {
+      return new originalIntl(locales, { ...options, timeZone: targetTz });
+    };
+    Object.setPrototypeOf(Intl.DateTimeFormat, originalIntl);
+    Intl.DateTimeFormat.supportedLocalesOf = originalIntl.supportedLocalesOf;
+
     const permissions = nav.permissions as Permissions;
     const originalQuery = permissions.query.bind(permissions);
     permissions.query = async (parameters: PermissionDescriptor) => {

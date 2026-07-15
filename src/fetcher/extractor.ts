@@ -47,6 +47,7 @@ const NOISE_SELECTORS = [
 
 export interface ExtractOptions {
   includeImages?: boolean;
+  includeLinks?: boolean;
   maxLength?: number;
 }
 
@@ -91,6 +92,9 @@ export function extractFromHtml(
   const contentRoot = findContentRoot(document);
   let content = contentRoot ? turndown.turndown(contentRoot.innerHTML).trim() : "";
 
+  const structuredData = extractStructuredData(document);
+  const links = options.includeLinks ? extractLinks(contentRoot, url) : undefined;
+
   if (options.includeImages) {
     const images = collectImages(contentRoot, url);
     if (images.length) {
@@ -98,10 +102,11 @@ export function extractFromHtml(
     }
   }
 
-  content = content
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
+  if (links?.length) {
+    content += "\n\n## Links\n\n" + links.map((l) => `- [${l.text}](${l.url})`).join("\n");
+  }
+
+  content = postProcessMarkdown(content);
 
   if (options.maxLength && content.length > options.maxLength) {
     content = content.slice(0, options.maxLength).trim() + "\n\n[Content truncated...]";
@@ -118,6 +123,8 @@ export function extractFromHtml(
       author,
       keywords,
       date: date ? date.split("T")[0] : undefined,
+      structuredData: structuredData.length ? structuredData : undefined,
+      links: links?.length ? links : undefined,
     },
   };
 }
@@ -157,6 +164,41 @@ function findContentRoot(document: Document): Element | null {
   return best;
 }
 
+function extractStructuredData(document: Document): unknown[] {
+  const results: unknown[] = [];
+  for (const el of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+    const text = el.textContent?.trim();
+    if (!text) continue;
+    try {
+      const parsed = JSON.parse(text);
+      results.push(parsed);
+    } catch {
+      // ignore malformed JSON-LD
+    }
+  }
+  return results;
+}
+
+function extractLinks(root: Element | null, pageUrl: string): { text: string; url: string }[] {
+  if (!root) return [];
+  const seen = new Set<string>();
+  const links: { text: string; url: string }[] = [];
+  for (const a of Array.from(root.querySelectorAll("a[href]"))) {
+    const href = a.getAttribute("href");
+    const text = a.textContent?.trim() || "";
+    if (!href) continue;
+    try {
+      const absolute = new URL(href, pageUrl).toString();
+      if (seen.has(absolute)) continue;
+      seen.add(absolute);
+      links.push({ text: text || absolute, url: absolute });
+    } catch {
+      // ignore malformed URLs
+    }
+  }
+  return links;
+}
+
 function collectImages(root: Element | null, pageUrl: string): string[] {
   if (!root) return [];
   const seen = new Set<string>();
@@ -175,6 +217,25 @@ function collectImages(root: Element | null, pageUrl: string): string[] {
     }
   }
   return images;
+}
+
+function postProcessMarkdown(md: string): string {
+  return (
+    md
+      // Remove empty links like [](url) or [](#)
+      .replace(/\[\s*\]\([^)]*\)/g, "")
+      // Collapse 3+ newlines to 2
+      .replace(/\n{3,}/g, "\n\n")
+      // Collapse multiple spaces
+      .replace(/[ \t]+/g, " ")
+      // Remove empty table rows
+      .replace(/\|(\s*\|)+/g, "")
+      // Remove trailing/leading whitespace per line
+      .split("\n")
+      .map((line) => line.trim())
+      .join("\n")
+      .trim()
+  );
 }
 
 export function formatForLLM(results: FetchedContent[]): string {

@@ -5,10 +5,10 @@ MCP server for web search with results optimized for LLMs and advanced bot-detec
 ## Features
 
 - **Search**: DuckDuckGo (no API key), Serper.dev, Bing Web Search
-- **Content extraction**: Headless browser with stealth injection
-- **Anti-detection**: Fingerprint rotation, human-like behavior, proxy support
-- **LLM formatting**: Clean markdown via Turndown, metadata, truncation with structure preserved
-- **Robustness**: Retry with exponential backoff, concurrency limiting, in-memory caching
+- **Content extraction**: Headless browser with stealth injection and BrowserContext isolation
+- **Anti-detection**: Dynamic fingerprint generation (viewport, UA, locale, timezone), human-like behavior, proxy support
+- **LLM formatting**: Clean markdown via Turndown, metadata, structured data, links, images
+- **Robustness**: Retry with exponential backoff, circuit breaker per provider, concurrency limiting, persistent cache
 
 ## Installation
 
@@ -26,7 +26,7 @@ Copy `.env.example` to `.env` and configure:
 SERPER_API_KEY=your_key
 BING_API_KEY=your_key
 
-# Anti-detection
+# Anti-detect
 STEALTH_ENABLED=true
 HEADLESS=true
 PROXY_LIST=http://proxy1:8080,http://proxy2:8080
@@ -35,6 +35,7 @@ USER_DATA_DIR=
 # Limits
 MAX_RESULTS=10
 MAX_CONTENT_LENGTH=8000
+MAX_RESPONSE_SIZE_BYTES=10000000
 REQUEST_TIMEOUT=30000
 CACHE_TTL=300
 
@@ -42,6 +43,12 @@ CACHE_TTL=300
 MIN_DELAY=500
 MAX_DELAY=3000
 MAX_CONCURRENT=2
+
+# Optional persistent cache directory
+CACHE_DIR=./cache
+
+# Logging
+LOG_LEVEL=info
 
 # Debug only — weakens browser security
 ALLOW_INSECURE_BROWSER_FLAGS=false
@@ -70,7 +77,8 @@ Fetch and clean a page.
 {
   "url": "https://example.com/article",
   "max_length": 8000,
-  "include_images": false
+  "include_images": false,
+  "include_links": false
 }
 ```
 
@@ -84,7 +92,8 @@ Search and automatically fetch top-N results.
   "num_results": 5,
   "fetch_content": true,
   "max_content_length": 5000,
-  "include_images": false
+  "include_images": false,
+  "include_links": false
 }
 ```
 
@@ -109,18 +118,29 @@ Search and automatically fetch top-N results.
 The server uses a layered approach:
 
 1. **puppeteer-extra-plugin-stealth** — hides automation fingerprints
-2. **Fingerprint rotation** — random Chrome/Edge on Windows/macOS/Linux
-3. **Human-like behavior** — random delays, scroll, mouse events
-4. **Proxy support** — random proxy selection from `PROXY_LIST`
-5. **Fallback chain** — premium APIs first, falls back to DuckDuckGo
-6. **Retry & rate limiting** — exponential backoff, bounded concurrency
+2. **Dynamic fingerprint generation** — random Chrome on Windows/macOS/Linux with matching timezone
+3. **BrowserContext isolation** — separate cookies/localStorage per request
+4. **Human-like behavior** — random delays, scroll, mouse events
+5. **Proxy support** — random proxy selection from `PROXY_LIST`
+6. **Fallback chain** — premium APIs first, falls back to DuckDuckGo
+7. **Circuit breaker** — temporarily disables failing providers
+8. **Retry & rate limiting** — exponential backoff, bounded concurrency
 
 ## Development
 
 ```bash
-npm run dev      # watch mode
-npm test         # run unit tests
-npm run build    # compile TypeScript
+npm run dev          # watch mode
+npm test             # run unit tests
+npm run build        # compile TypeScript
+npm run lint         # run ESLint
+npm run format       # format with Prettier
+```
+
+## Docker
+
+```bash
+docker build -t mcp-web-search .
+docker run --rm -e SERPER_API_KEY=... mcp-web-search
 ```
 
 ## License

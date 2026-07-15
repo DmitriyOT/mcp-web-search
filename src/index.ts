@@ -33,6 +33,7 @@ const FetchUrlSchema = z.object({
   url: z.string().url().max(MAX_URL_LENGTH).describe("URL to fetch"),
   max_length: z.number().int().min(1).optional().default(8000),
   include_images: z.boolean().optional().default(false),
+  include_links: z.boolean().optional().default(false),
 });
 
 const SearchAndFetchSchema = z.object({
@@ -41,6 +42,7 @@ const SearchAndFetchSchema = z.object({
   fetch_content: z.boolean().optional().default(true),
   max_content_length: z.number().int().min(1).optional().default(5000),
   include_images: z.boolean().optional().default(false),
+  include_links: z.boolean().optional().default(false),
 });
 
 // Tools definition
@@ -82,6 +84,11 @@ const TOOLS: Tool[] = [
           description: "Include image references",
           default: false,
         },
+        include_links: {
+          type: "boolean",
+          description: "Include page links section",
+          default: false,
+        },
       },
       required: ["url"],
     },
@@ -108,6 +115,11 @@ const TOOLS: Tool[] = [
         include_images: {
           type: "boolean",
           description: "Include image references from pages",
+          default: false,
+        },
+        include_links: {
+          type: "boolean",
+          description: "Include page links section",
           default: false,
         },
       },
@@ -157,6 +169,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         url: parsed.url,
         maxLength: parsed.max_length,
         includeImages: parsed.include_images,
+        includeLinks: parsed.include_links,
       });
 
       let text = `Title: ${result.title}\nURL: ${result.url}\n`;
@@ -194,6 +207,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               url: r.url,
               maxLength: parsed.max_content_length,
               includeImages: parsed.include_images,
+              includeLinks: parsed.include_links,
             });
           } catch (err) {
             return {

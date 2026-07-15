@@ -1,6 +1,6 @@
 import { config } from "../config.js";
 import type { SearchOptions, SearchResult } from "../types.js";
-import { MemoryCache, Semaphore } from "../utils/index.js";
+import { CircuitBreaker, MemoryCache, Semaphore } from "../utils/index.js";
 import type { SearchProvider } from "./base.js";
 import { BingProvider } from "./bing.js";
 import { DuckDuckGoProvider } from "./duckduckgo.js";
@@ -8,6 +8,7 @@ import { SerperProvider } from "./serper.js";
 
 export class SearchAggregator {
   private providers: SearchProvider[];
+  private breakers: Map<string, CircuitBreaker>;
   private cache: MemoryCache<SearchResult[]>;
   private semaphore: Semaphore;
 
@@ -17,6 +18,12 @@ export class SearchAggregator {
       new BingProvider(),
       new DuckDuckGoProvider(),
     ];
+    this.breakers = new Map(
+      this.providers.map((p) => [
+        p.name,
+        new CircuitBreaker(p.name, { failureThreshold: 3, recoveryTimeoutMs: 60000 }),
+      ])
+    );
     this.cache = new MemoryCache<SearchResult[]>(config.cacheTtl * 1000);
     this.semaphore = new Semaphore(config.maxConcurrent);
   }
@@ -36,14 +43,16 @@ export class SearchAggregator {
         if (!provider) {
           throw new Error(`Unknown provider: ${providerName}`);
         }
-        return dedupeResults(await provider.search(options));
+        const breaker = this.breakers.get(provider.name)!;
+        return dedupeResults(await breaker.run(() => provider.search(options)));
       }
 
       // Auto: try premium APIs first, fallback to DuckDuckGo
       const errors: string[] = [];
       for (const provider of this.providers) {
+        const breaker = this.breakers.get(provider.name)!;
         try {
-          const results = await provider.search(options);
+          const results = await breaker.run(() => provider.search(options));
           if (results.length > 0) {
             return dedupeResults(results);
           }

@@ -41,10 +41,12 @@ export const configSchema = z.object({
 
   // Browser
   userDataDir: z.string().optional(),
+  cacheDir: z.string().optional(),
 
   // Limits
   maxResults: positiveInt(10),
   maxContentLength: positiveInt(8000),
+  maxResponseSizeBytes: positiveInt(10_000_000),
   requestTimeout: positiveInt(30000),
   cacheTtl: positiveInt(300),
 
