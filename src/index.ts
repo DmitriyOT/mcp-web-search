@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
+import { createServer, Server as HttpServer } from "node:http";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -13,7 +16,16 @@ import { config } from "./config.js";
 import { browserManager } from "./fetcher/browser.js";
 import { fetchUrl, formatForLLM } from "./fetcher/index.js";
 import { SearchAggregator } from "./search/aggregator.js";
-import { logger, Semaphore, shutdownManager } from "./utils/index.js";
+import {
+  extractTextFromImage,
+  isAllowedUrl,
+  logger,
+  Semaphore,
+  shutdownManager,
+  startHotReload,
+  stopHotReload,
+  zodSchemaToJsonSchema,
+} from "./utils/index.js";
 
 const searchAggregator = new SearchAggregator();
 const fetchSemaphore = new Semaphore(config.maxConcurrent);
@@ -47,96 +59,59 @@ const SearchAndFetchSchema = z.object({
 
 const HealthCheckSchema = z.object({});
 
+const OcrImageSchema = z.object({
+  url: z.string().url().max(MAX_URL_LENGTH).describe("URL of the image to OCR"),
+  language: z.string().optional().default("eng"),
+});
+
+const CheckLinksSchema = z.object({
+  url: z.string().url().max(MAX_URL_LENGTH).describe("Page URL to scan for broken links"),
+  max_links: z.number().int().min(1).max(100).optional().default(20),
+});
+
 // Tools definition
-const TOOLS: Tool[] = [
+const TOOL_DEFINITIONS = [
   {
     name: "web_search",
     description:
       "Search the web for a query. Returns a list of results with title, URL, and snippet. Use provider='auto' to try all available search engines.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" },
-        num_results: { type: "number", description: "Number of results (1-50)", default: 10 },
-        provider: {
-          type: "string",
-          enum: ["auto", "duckduckgo", "serper", "bing"],
-          default: "auto",
-        },
-        recency_days: { type: "number", description: "Limit results to recent N days" },
-      },
-      required: ["query"],
-    },
+    schema: WebSearchSchema,
   },
   {
     name: "fetch_url",
     description:
       "Fetch and extract clean text content from a URL. Optimized for LLM consumption with metadata.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to fetch" },
-        max_length: {
-          type: "number",
-          description: "Maximum content length in characters",
-          default: 8000,
-        },
-        include_images: {
-          type: "boolean",
-          description: "Include image references",
-          default: false,
-        },
-        include_links: {
-          type: "boolean",
-          description: "Include page links section",
-          default: false,
-        },
-      },
-      required: ["url"],
-    },
+    schema: FetchUrlSchema,
   },
   {
     name: "search_and_fetch",
     description:
       "Search the web and automatically fetch content from top results. Returns combined LLM-formatted output.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" },
-        num_results: {
-          type: "number",
-          description: "Number of results to fetch (1-20)",
-          default: 5,
-        },
-        fetch_content: {
-          type: "boolean",
-          description: "Whether to fetch full page content",
-          default: true,
-        },
-        max_content_length: { type: "number", description: "Max length per page", default: 5000 },
-        include_images: {
-          type: "boolean",
-          description: "Include image references from pages",
-          default: false,
-        },
-        include_links: {
-          type: "boolean",
-          description: "Include page links section",
-          default: false,
-        },
-      },
-      required: ["query"],
-    },
+    schema: SearchAndFetchSchema,
   },
   {
     name: "health_check",
     description: "Check the health status of search providers and the server.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
+    schema: HealthCheckSchema,
+  },
+  {
+    name: "ocr_image",
+    description: "Extract text from an image URL using OCR (Optical Character Recognition).",
+    schema: OcrImageSchema,
+  },
+  {
+    name: "check_links",
+    description:
+      "Fetch a page and check its outgoing links for broken URLs. Returns status for each checked link.",
+    schema: CheckLinksSchema,
   },
 ];
+
+const TOOLS: Tool[] = TOOL_DEFINITIONS.map(({ name, description, schema }) => ({
+  name,
+  description,
+  inputSchema: zodSchemaToJsonSchema(schema),
+}));
 
 // Server setup
 const server = new Server(
@@ -250,6 +225,82 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
           };
         }
 
+        if (name === "ocr_image") {
+          const parsed = OcrImageSchema.parse(args);
+          if (!isAllowedUrl(parsed.url)) {
+            throw new Error(`URL not allowed: ${parsed.url}`);
+          }
+
+          const response = await fetch(parsed.url, {
+            redirect: "follow",
+            signal: AbortSignal.timeout(config.requestTimeout),
+          });
+          if (!response.ok) {
+            throw new Error(`Image fetch failed: ${response.status}`);
+          }
+
+          const contentType = response.headers.get("content-type") || "";
+          if (!contentType.startsWith("image/")) {
+            throw new Error(`URL is not an image: ${contentType}`);
+          }
+
+          const buffer = Buffer.from(await response.arrayBuffer());
+          if (buffer.length > config.maxResponseSizeBytes) {
+            throw new Error(
+              `Image too large: ${buffer.length} bytes (max ${config.maxResponseSizeBytes})`
+            );
+          }
+
+          const text = await extractTextFromImage(buffer, parsed.language);
+          return {
+            content: [{ type: "text", text: text || "No text found in image." }],
+          };
+        }
+
+        if (name === "check_links") {
+          const parsed = CheckLinksSchema.parse(args);
+          const fetched = await fetchUrl({
+            url: parsed.url,
+            includeLinks: true,
+            maxLength: 1000,
+          });
+
+          const links = (fetched.metadata.links ?? [])
+            .map((link) => link.url)
+            .filter((url, index, arr) => arr.indexOf(url) === index)
+            .slice(0, parsed.max_links);
+
+          const results = await Promise.all(
+            links.map(async (url) => {
+              try {
+                const response = await fetch(url, {
+                  method: "HEAD",
+                  redirect: "follow",
+                  signal: AbortSignal.timeout(config.requestTimeout),
+                });
+                return { url, status: response.status, ok: response.ok };
+              } catch (err) {
+                return { url, status: 0, ok: false, error: (err as Error).message };
+              }
+            })
+          );
+
+          const lines = results.map((r) => {
+            const status = r.status === 0 ? "ERROR" : String(r.status);
+            const marker = r.ok ? "✓" : "✗";
+            return `${marker} ${r.url} (${status})${r.error ? ` - ${r.error}` : ""}`;
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: lines.join("\n") || "No links found on the page.",
+              },
+            ],
+          };
+        }
+
         throw new Error(`Unknown tool: ${name}`);
       } catch (err) {
         const message = (err as Error).message;
@@ -266,19 +317,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 
 // Cleanup on exit
 process.on("SIGINT", async () => {
+  stopHotReload();
   await shutdownManager.shutdown();
   await browserManager.close();
+  await httpServer?.close();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
+  stopHotReload();
   await shutdownManager.shutdown();
   await browserManager.close();
+  await httpServer?.close();
   process.exit(0);
 });
 
+let httpServer: HttpServer | undefined;
+
 // Start server
 async function main() {
+  startHotReload();
+
+  if (config.mcpTransport === "http") {
+    if (!config.httpPort) {
+      throw new Error("HTTP transport selected but HTTP_PORT is not set");
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+    await server.connect(transport);
+
+    httpServer = createServer((req, res) => {
+      transport.handleRequest(req, res).catch((err: Error) => {
+        logger.error("HTTP transport error", { error: err.message });
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end("Internal Server Error");
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      httpServer!.listen(config.httpPort, config.httpHost, () => {
+        logger.info("MCP Web Search server running on HTTP", {
+          host: config.httpHost,
+          port: config.httpPort,
+        });
+        resolve();
+      });
+    });
+    return;
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("MCP Web Search server running on stdio");
@@ -287,5 +378,6 @@ async function main() {
 main().catch(async (err) => {
   logger.error("Fatal error", { error: String(err) });
   await browserManager.close();
+  await httpServer?.close();
   process.exit(1);
 });

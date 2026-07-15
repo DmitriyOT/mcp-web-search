@@ -42,4 +42,32 @@ describe("parseConfig", () => {
     assert.throws(() => parseConfig({ MAX_RESULTS: "0" }), /positive integer/);
     assert.throws(() => parseConfig({ MAX_RESULTS: "-5" }), /positive integer/);
   });
+
+  it("parses transport and HTTP settings", () => {
+    const cfg = parseConfig({
+      MCP_TRANSPORT: "http",
+      HTTP_HOST: "0.0.0.0",
+      HTTP_PORT: "8080",
+    });
+    assert.equal(cfg.mcpTransport, "http");
+    assert.equal(cfg.httpHost, "0.0.0.0");
+    assert.equal(cfg.httpPort, 8080);
+  });
+
+  it("parses search merge mode and rate limits", () => {
+    const cfg = parseConfig({
+      SEARCH_MERGE_MODE: "merge",
+      SERPER_RATE_LIMIT: "20",
+      BING_RATE_LIMIT: "15",
+      DUCKDUCKGO_RATE_LIMIT: "2",
+    });
+    assert.equal(cfg.searchMergeMode, "merge");
+    assert.equal(cfg.serperRateLimit, 20);
+    assert.equal(cfg.bingRateLimit, 15);
+    assert.equal(cfg.duckduckgoRateLimit, 2);
+  });
+
+  it("rejects invalid HTTP port", () => {
+    assert.throws(() => parseConfig({ HTTP_PORT: "abc" }), /positive integer/);
+  });
 });

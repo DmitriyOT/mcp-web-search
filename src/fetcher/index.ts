@@ -1,10 +1,12 @@
 import { config } from "../config.js";
 import type { FetchedContent, FetchOptions } from "../types.js";
 import {
+  InFlightDeduper,
   isAllowedByRobotsTxt,
   isAllowedUrl,
   logger,
   MemoryCache,
+  metrics,
   PersistentCache,
   withRetry,
 } from "../utils/index.js";
@@ -16,6 +18,7 @@ const memoryCache = new MemoryCache<FetchedContent>(config.cacheTtl * 1000);
 const persistentCache = config.cacheDir
   ? new PersistentCache<FetchedContent>(config.cacheDir)
   : null;
+const inFlightDeduper = new InFlightDeduper<FetchedContent>();
 
 export async function fetchUrl(options: FetchOptions): Promise<FetchedContent> {
   if (!isAllowedUrl(options.url)) {
@@ -29,18 +32,19 @@ export async function fetchUrl(options: FetchOptions): Promise<FetchedContent> {
   const cacheKey = options.url;
   const cached = memoryCache.get(cacheKey) ?? (await persistentCache?.get(cacheKey));
   if (cached) {
+    metrics.recordFetchCacheHit();
     logger.debug("fetch_url cache hit", { url: options.url });
     return cached;
   }
 
-  return withRetry(
-    async () => {
+  return inFlightDeduper.run(cacheKey, async () => {
+    const end = metrics.recordFetchStart();
+    try {
       const contentType = await probeContentType(options.url);
 
       if (contentType.includes("application/pdf")) {
         const result = await fetchPdf(options);
-        memoryCache.set(cacheKey, result);
-        await persistentCache?.set(cacheKey, result, config.cacheTtl * 1000);
+        await cacheResult(cacheKey, result);
         return result;
       }
 
@@ -48,71 +52,139 @@ export async function fetchUrl(options: FetchOptions): Promise<FetchedContent> {
         throw new Error(`Unsupported content type: ${contentType}`);
       }
 
-      const managed = await browserManager.newIsolatedPage();
       try {
-        await browserManager.randomDelay();
-        const response = await managed.page.goto(options.url, {
-          waitUntil: "networkidle2",
-          timeout: config.requestTimeout,
+        const result = await withRetry(() => fetchWithBrowser(options), {
+          retries: 2,
+          minDelay: config.minDelay,
+          maxDelay: config.maxDelay,
+          shouldRetry: (err) => {
+            const msg = err.message.toLowerCase();
+            return (
+              msg.includes("timeout") ||
+              msg.includes("navigation") ||
+              msg.includes("net::") ||
+              msg.includes("unsupported content type")
+            );
+          },
         });
-
-        if (!response) {
-          throw new Error("No response from page");
-        }
-
-        if (response.status() >= 400) {
-          throw new Error(`HTTP ${response.status()}`);
-        }
-
-        const headers = response.headers();
-        const contentLength = headers["content-length"];
-        if (contentLength && Number(contentLength) > config.maxResponseSizeBytes) {
-          throw new Error(
-            `Response too large: ${contentLength} bytes (max ${config.maxResponseSizeBytes})`
-          );
-        }
-
-        const finalUrl = managed.page.url();
-        if (!isAllowedUrl(finalUrl)) {
-          throw new Error(`Redirected to disallowed URL: ${finalUrl}`);
-        }
-
-        await browserManager.humanLikeScroll(managed.page);
-        if (config.scrollToBottom) {
-          await browserManager.scrollToBottom(managed.page);
-        }
-        await browserManager.randomDelay();
-
-        const html = await managed.page.content();
-        detectBlocking(html, finalUrl);
-
-        const result = extractFromHtml(finalUrl, html, {
-          includeImages: options.includeImages,
-          includeLinks: options.includeLinks,
-          maxLength: options.maxLength ?? config.maxContentLength,
-        });
-
-        memoryCache.set(cacheKey, result);
-        await persistentCache?.set(cacheKey, result, config.cacheTtl * 1000);
+        await cacheResult(cacheKey, result);
         return result;
-      } finally {
-        await managed.close();
+      } catch (browserErr) {
+        if (config.textFetchFallback && shouldTextFallback(browserErr as Error)) {
+          logger.warn("Browser fetch failed, trying text fallback", {
+            url: options.url,
+            error: (browserErr as Error).message,
+          });
+          const result = await fetchWithText(options);
+          await cacheResult(cacheKey, result);
+          return result;
+        }
+        throw browserErr;
       }
-    },
-    {
-      retries: 2,
-      minDelay: config.minDelay,
-      maxDelay: config.maxDelay,
-      shouldRetry: (err) => {
-        const msg = err.message.toLowerCase();
-        return (
-          msg.includes("timeout") ||
-          msg.includes("navigation") ||
-          msg.includes("net::") ||
-          msg.includes("unsupported content type")
-        );
-      },
+    } catch (err) {
+      metrics.recordFetchError();
+      throw err;
+    } finally {
+      end();
     }
+  });
+}
+
+async function cacheResult(cacheKey: string, result: FetchedContent): Promise<void> {
+  memoryCache.set(cacheKey, result);
+  await persistentCache?.set(cacheKey, result, config.cacheTtl * 1000);
+}
+
+async function fetchWithBrowser(options: FetchOptions): Promise<FetchedContent> {
+  const managed = await browserManager.newIsolatedPage();
+  try {
+    await browserManager.randomDelay();
+    const response = await managed.page.goto(options.url, {
+      waitUntil: "networkidle2",
+      timeout: config.requestTimeout,
+    });
+
+    if (!response) {
+      throw new Error("No response from page");
+    }
+
+    if (response.status() >= 400) {
+      throw new Error(`HTTP ${response.status()}`);
+    }
+
+    const headers = response.headers();
+    const contentLength = headers["content-length"];
+    if (contentLength && Number(contentLength) > config.maxResponseSizeBytes) {
+      throw new Error(
+        `Response too large: ${contentLength} bytes (max ${config.maxResponseSizeBytes})`
+      );
+    }
+
+    const finalUrl = managed.page.url();
+    if (!isAllowedUrl(finalUrl)) {
+      throw new Error(`Redirected to disallowed URL: ${finalUrl}`);
+    }
+
+    await browserManager.humanLikeScroll(managed.page);
+    if (config.scrollToBottom) {
+      await browserManager.scrollToBottom(managed.page);
+    }
+    await browserManager.randomDelay();
+
+    const html = await managed.page.content();
+    detectBlocking(html, finalUrl);
+
+    return extractFromHtml(finalUrl, html, {
+      includeImages: options.includeImages,
+      includeLinks: options.includeLinks,
+      maxLength: options.maxLength ?? config.maxContentLength,
+    });
+  } finally {
+    await managed.close();
+  }
+}
+
+async function fetchWithText(options: FetchOptions): Promise<FetchedContent> {
+  const response = await fetch(options.url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(config.requestTimeout),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Text fetch failed: ${response.status}`);
+  }
+
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && Number(contentLength) > config.maxResponseSizeBytes) {
+    throw new Error(
+      `Response too large: ${contentLength} bytes (max ${config.maxResponseSizeBytes})`
+    );
+  }
+
+  const finalUrl = response.url;
+  if (!isAllowedUrl(finalUrl)) {
+    throw new Error(`Redirected to disallowed URL: ${finalUrl}`);
+  }
+
+  const html = await response.text();
+  detectBlocking(html, finalUrl);
+
+  return extractFromHtml(finalUrl, html, {
+    includeImages: options.includeImages,
+    includeLinks: options.includeLinks,
+    maxLength: options.maxLength ?? config.maxContentLength,
+  });
+}
+
+function shouldTextFallback(err: Error): boolean {
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("timeout") ||
+    msg.includes("navigation") ||
+    msg.includes("net::") ||
+    msg.includes("blocked") ||
+    msg.includes("captcha") ||
+    msg.includes("no response from page")
   );
 }
 

@@ -3,6 +3,8 @@ import { z } from "zod";
 
 dotenv.config();
 
+export const ENV_FILE = process.env.ENV_FILE || ".env";
+
 const positiveInt = (defaultValue: number) =>
   z
     .string()
@@ -42,6 +44,7 @@ export const configSchema = z.object({
   // Browser
   userDataDir: z.string().optional(),
   cacheDir: z.string().optional(),
+  browserPoolSize: positiveInt(2),
 
   // Limits
   maxResults: positiveInt(10),
@@ -55,6 +58,17 @@ export const configSchema = z.object({
   maxDelay: positiveInt(3000),
   maxConcurrent: positiveInt(2),
   scrollToBottom: booleanFromEnv(true),
+
+  // Rate limits (requests per second per provider)
+  serperRateLimit: positiveInt(10),
+  bingRateLimit: positiveInt(10),
+  duckduckgoRateLimit: positiveInt(1),
+
+  // Search aggregation
+  searchMergeMode: z.enum(["fallback", "merge"]).default("fallback"),
+
+  // Fetch behavior
+  textFetchFallback: booleanFromEnv(true),
 
   // Ethics / safety
   robotsTxtEnabled: booleanFromEnv(true),
@@ -76,6 +90,24 @@ export const configSchema = z.object({
         .map((d) => d.trim().toLowerCase())
         .filter(Boolean)
     ),
+
+  // Logging
+  logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+
+  // Transport
+  mcpTransport: z.enum(["stdio", "http"]).default("stdio"),
+  httpHost: z.string().default("127.0.0.1"),
+  httpPort: z
+    .string()
+    .optional()
+    .transform((val) => {
+      if (!val) return undefined;
+      const parsed = Number.parseInt(val, 10);
+      if (Number.isNaN(parsed) || parsed <= 0) {
+        throw new Error(`Expected positive integer for HTTP port, got "${val}"`);
+      }
+      return parsed;
+    }),
 
   // Debug / advanced
   allowInsecureBrowserFlags: booleanFromEnv(false),
@@ -99,3 +131,9 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
 }
 
 export const config = parseConfig(process.env);
+
+export function reloadConfig(): void {
+  dotenv.config({ path: ENV_FILE, override: true });
+  const fresh = parseConfig(process.env);
+  Object.assign(config, fresh);
+}

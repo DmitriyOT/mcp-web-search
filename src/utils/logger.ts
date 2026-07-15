@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 
+import pino from "pino";
+
+import { config } from "../config.js";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVELS: Record<LogLevel, number> = {
@@ -10,9 +14,9 @@ const LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
-function levelFromEnv(): LogLevel {
-  const env = process.env.LOG_LEVEL?.toLowerCase();
-  if (env && env in LEVELS) return env as LogLevel;
+function normalizeLevel(level: string): LogLevel {
+  const normalized = level.toLowerCase();
+  if (normalized in LEVELS) return normalized as LogLevel;
   return "info";
 }
 
@@ -23,7 +27,20 @@ export interface LogContext {
 const logContext = new AsyncLocalStorage<LogContext>();
 
 class Logger {
-  private level = levelFromEnv();
+  private pino: pino.Logger;
+
+  constructor() {
+    this.pino = pino(
+      {
+        level: normalizeLevel(config.logLevel),
+        base: {
+          pid: process.pid,
+          // Do not include hostname by default to keep stdio MCP transport clean.
+        },
+      },
+      pino.destination(2)
+    );
+  }
 
   runWithRequestId<T>(fn: () => T): T {
     return logContext.run({ requestId: randomUUID() }, fn);
@@ -34,20 +51,16 @@ class Logger {
   }
 
   private shouldLog(level: LogLevel): boolean {
-    return LEVELS[level] >= LEVELS[this.level];
+    return LEVELS[level] >= LEVELS[(this.pino.level as LogLevel) ?? "info"];
   }
 
   private log(level: LogLevel, message: string, meta?: Record<string, unknown>) {
     if (!this.shouldLog(level)) return;
     const context = logContext.getStore();
-    const entry = {
-      level,
-      message,
-      ...(context?.requestId ? { requestId: context.requestId } : {}),
-      ...(meta ? { meta } : {}),
-    };
-    // Use stderr to avoid polluting stdio MCP transport
-    console.error(JSON.stringify(entry));
+    const child = context?.requestId
+      ? this.pino.child({ requestId: context.requestId })
+      : this.pino;
+    child[level](meta ?? {}, message);
   }
 
   debug(message: string, meta?: Record<string, unknown>) {

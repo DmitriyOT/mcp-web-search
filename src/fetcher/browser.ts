@@ -43,6 +43,7 @@ export class BrowserManager {
   private browser: Browser | null = null;
   private requestCount = 0;
   private restartThreshold = 50;
+  private pagePool: Page[] = [];
 
   async getBrowser(): Promise<Browser> {
     if (this.browser && this.requestCount < this.restartThreshold) {
@@ -50,6 +51,7 @@ export class BrowserManager {
     }
 
     if (this.browser) {
+      await this.clearPool();
       await this.browser.close();
       this.browser = null;
       this.requestCount = 0;
@@ -86,9 +88,8 @@ export class BrowserManager {
   async newIsolatedPage(): Promise<ManagedPage> {
     const browser = await this.getBrowser();
     const fp = getRandomFingerprint();
-    const context = await browser.createBrowserContext();
 
-    const page = await context.newPage();
+    const page = await this.acquirePage();
     await page.setUserAgent(fp.userAgent);
     await page.setExtraHTTPHeaders({
       "Accept-Language": `${fp.locale},en;q=0.9`,
@@ -111,16 +112,49 @@ export class BrowserManager {
 
     return {
       page,
-      context,
+      context: browser.defaultBrowserContext(),
       fingerprint: fp,
       close: async () => {
-        try {
-          await context.close();
-        } catch {
-          // ignore
-        }
+        await this.releasePage(page);
       },
     };
+  }
+
+  private async acquirePage(): Promise<Page> {
+    const existing = this.pagePool.pop();
+    if (existing) {
+      return existing;
+    }
+    const browser = await this.getBrowser();
+    return browser.newPage();
+  }
+
+  private async releasePage(page: Page): Promise<void> {
+    try {
+      const cookies = await page.cookies();
+      if (cookies.length > 0) {
+        await page.deleteCookie(...cookies);
+      }
+      await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5000 });
+    } catch {
+      // If reset fails, close the page instead of returning it to the pool.
+      try {
+        await page.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (this.pagePool.length < config.browserPoolSize) {
+      this.pagePool.push(page);
+    } else {
+      try {
+        await page.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   async randomDelay() {
@@ -155,10 +189,24 @@ export class BrowserManager {
   }
 
   async close() {
+    await this.clearPool();
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
       this.requestCount = 0;
+    }
+  }
+
+  private async clearPool(): Promise<void> {
+    while (this.pagePool.length > 0) {
+      const page = this.pagePool.pop();
+      if (page) {
+        try {
+          await page.close();
+        } catch {
+          // ignore
+        }
+      }
     }
   }
 

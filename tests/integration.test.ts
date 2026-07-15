@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 
+import { config } from "../src/config.js";
 import { extractFromHtml } from "../src/fetcher/extractor.js";
 import { SearchAggregator } from "../src/search/aggregator.js";
 import { SearchProvider } from "../src/search/base.js";
@@ -79,6 +80,64 @@ describe("SearchAggregator integration", () => {
     await aggregator.search({ query: "cache-test" });
     await aggregator.search({ query: "cache-test" });
     assert.equal(calls, 1);
+  });
+
+  describe("merge mode", () => {
+    const originalMode = config.searchMergeMode;
+
+    afterEach(() => {
+      config.searchMergeMode = originalMode;
+    });
+
+    it("merges and deduplicates results from multiple providers", async () => {
+      config.searchMergeMode = "merge";
+      const aggregator = new SearchAggregator([
+        new StubProvider("serper", [
+          { title: "First", url: "https://example.com/a", snippet: "alpha" },
+          { title: "Shared", url: "https://example.com/shared", snippet: "shared a" },
+        ]),
+        new StubProvider("bing", [
+          { title: "Second", url: "https://example.com/b", snippet: "beta" },
+          { title: "Shared", url: "https://example.com/shared/", snippet: "shared b" },
+        ]),
+      ]);
+
+      const results = await aggregator.search({ query: "test" });
+      assert.equal(results.length, 3);
+      const urls = results.map((r) => r.url);
+      assert.ok(urls.includes("https://example.com/a"));
+      assert.ok(urls.includes("https://example.com/b"));
+      assert.equal(results.filter((r) => r.title === "Shared").length, 1);
+    });
+
+    it("ranks results by query relevance", async () => {
+      config.searchMergeMode = "merge";
+      const aggregator = new SearchAggregator([
+        new StubProvider("serper", [
+          { title: "Z page", url: "https://example.com/z", snippet: "unrelated" },
+        ]),
+        new StubProvider("bing", [
+          {
+            title: "Acme banana recipes",
+            url: "https://example.com/banana",
+            snippet: "ripe banana",
+          },
+        ]),
+      ]);
+
+      const results = await aggregator.search({ query: "banana" });
+      assert.equal(results[0].title, "Acme banana recipes");
+    });
+
+    it("throws when all providers fail in merge mode", async () => {
+      config.searchMergeMode = "merge";
+      const aggregator = new SearchAggregator([
+        new StubProvider("serper", [], true),
+        new StubProvider("bing", [], true),
+      ]);
+
+      await assert.rejects(aggregator.search({ query: "test" }), /All search providers failed/);
+    });
   });
 });
 

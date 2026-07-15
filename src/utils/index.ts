@@ -1,9 +1,15 @@
 export { MemoryCache } from "./cache.js";
 export { CircuitBreaker, type CircuitBreakerOptions } from "./circuit-breaker.js";
 export { Semaphore } from "./concurrency.js";
+export { startHotReload, stopHotReload } from "./config-reload.js";
+export { InFlightDeduper } from "./deduper.js";
 export { logger } from "./logger.js";
+export { metrics } from "./metrics.js";
+export { extractTextFromImage } from "./ocr.js";
 export { PersistentCache } from "./persistent-cache.js";
 export { type RetryOptions, withRetry } from "./retry.js";
 export { isAllowedByRobotsTxt } from "./robots.js";
+export { zodSchemaToJsonSchema } from "./schema.js";
 export { shutdownManager } from "./shutdown.js";
+export { TokenBucket } from "./token-bucket.js";
 export { isAllowedUrl, normalizeUrl } from "./url.js";
