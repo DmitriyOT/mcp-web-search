@@ -68,6 +68,14 @@ export class SearchAggregator {
     return result;
   }
 
+  health(): Array<{ name: string; available: boolean; circuitState: string }> {
+    return this.providers.map((p) => ({
+      name: p.name,
+      available: p.isAvailable(),
+      circuitState: this.breakers.get(p.name)!.getState(),
+    }));
+  }
+
   private cacheKey(options: SearchOptions): string {
     return JSON.stringify({
       q: options.query,

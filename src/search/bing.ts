@@ -6,7 +6,7 @@ import { SearchProvider } from "./base.js";
 export class BingProvider extends SearchProvider {
   name = "bing";
 
-  protected isAvailable(): boolean {
+  isAvailable(): boolean {
     return !!config.bingApiKey;
   }
 

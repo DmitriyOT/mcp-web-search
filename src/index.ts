@@ -13,7 +13,7 @@ import { config } from "./config.js";
 import { browserManager } from "./fetcher/browser.js";
 import { fetchUrl, formatForLLM } from "./fetcher/index.js";
 import { SearchAggregator } from "./search/aggregator.js";
-import { logger, Semaphore } from "./utils/index.js";
+import { logger, Semaphore, shutdownManager } from "./utils/index.js";
 
 const searchAggregator = new SearchAggregator();
 const fetchSemaphore = new Semaphore(config.maxConcurrent);
@@ -44,6 +44,8 @@ const SearchAndFetchSchema = z.object({
   include_images: z.boolean().optional().default(false),
   include_links: z.boolean().optional().default(false),
 });
+
+const HealthCheckSchema = z.object({});
 
 // Tools definition
 const TOOLS: Tool[] = [
@@ -126,6 +128,14 @@ const TOOLS: Tool[] = [
       required: ["query"],
     },
   },
+  {
+    name: "health_check",
+    description: "Check the health status of search providers and the server.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
 ];
 
 // Server setup
@@ -138,111 +148,131 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS };
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+server.setRequestHandler(CallToolRequestSchema, async (request) =>
+  logger.runWithRequestId(async () => {
+    const endRequest = shutdownManager.beginRequest();
+    try {
+      const { name, arguments: args } = request.params;
 
-  try {
-    if (name === "web_search") {
-      const parsed = WebSearchSchema.parse(args);
-      const results = await searchAggregator.search({
-        query: parsed.query,
-        numResults: parsed.num_results,
-        provider: parsed.provider,
-        recencyDays: parsed.recency_days,
-      });
+      try {
+        if (name === "web_search") {
+          const parsed = WebSearchSchema.parse(args);
+          const results = await searchAggregator.search({
+            query: parsed.query,
+            numResults: parsed.num_results,
+            provider: parsed.provider,
+            recencyDays: parsed.recency_days,
+          });
 
-      const output = results
-        .map(
-          (r, i) =>
-            `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}${r.date ? `\n   Date: ${r.date}` : ""}`
-        )
-        .join("\n\n");
+          const output = results
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}${r.date ? `\n   Date: ${r.date}` : ""}`
+            )
+            .join("\n\n");
 
-      return {
-        content: [{ type: "text", text: output || "No results found." }],
-      };
-    }
+          return {
+            content: [{ type: "text", text: output || "No results found." }],
+          };
+        }
 
-    if (name === "fetch_url") {
-      const parsed = FetchUrlSchema.parse(args);
-      const result = await fetchUrl({
-        url: parsed.url,
-        maxLength: parsed.max_length,
-        includeImages: parsed.include_images,
-        includeLinks: parsed.include_links,
-      });
+        if (name === "fetch_url") {
+          const parsed = FetchUrlSchema.parse(args);
+          const result = await fetchUrl({
+            url: parsed.url,
+            maxLength: parsed.max_length,
+            includeImages: parsed.include_images,
+            includeLinks: parsed.include_links,
+          });
 
-      let text = `Title: ${result.title}\nURL: ${result.url}\n`;
-      if (result.metadata.date) text += `Date: ${result.metadata.date}\n`;
-      if (result.metadata.author) text += `Author: ${result.metadata.author}\n`;
-      if (result.metadata.description) text += `Description: ${result.metadata.description}\n`;
-      text += `\n${result.content}`;
+          let text = `Title: ${result.title}\nURL: ${result.url}\n`;
+          if (result.metadata.date) text += `Date: ${result.metadata.date}\n`;
+          if (result.metadata.author) text += `Author: ${result.metadata.author}\n`;
+          if (result.metadata.description) text += `Description: ${result.metadata.description}\n`;
+          text += `\n${result.content}`;
 
-      return {
-        content: [{ type: "text", text }],
-      };
-    }
+          return {
+            content: [{ type: "text", text }],
+          };
+        }
 
-    if (name === "search_and_fetch") {
-      const parsed = SearchAndFetchSchema.parse(args);
-      const searchResults = await searchAggregator.search({
-        query: parsed.query,
-        numResults: parsed.num_results,
-      });
+        if (name === "health_check") {
+          HealthCheckSchema.parse(args);
+          const health = searchAggregator.health();
+          const lines = health.map(
+            (h) => `${h.name}: available=${h.available}, circuit=${h.circuitState}`
+          );
+          return {
+            content: [{ type: "text", text: lines.join("\n") }],
+          };
+        }
 
-      if (!parsed.fetch_content) {
-        const output = searchResults
-          .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
-          .join("\n\n");
-        return {
-          content: [{ type: "text", text: output || "No results found." }],
-        };
-      }
+        if (name === "search_and_fetch") {
+          const parsed = SearchAndFetchSchema.parse(args);
+          const searchResults = await searchAggregator.search({
+            query: parsed.query,
+            numResults: parsed.num_results,
+          });
 
-      const fetched: Awaited<ReturnType<typeof fetchUrl>>[] = [];
-      const fetchPromises = searchResults.slice(0, parsed.num_results).map((r) =>
-        fetchSemaphore.run(async () => {
-          try {
-            return await fetchUrl({
-              url: r.url,
-              maxLength: parsed.max_content_length,
-              includeImages: parsed.include_images,
-              includeLinks: parsed.include_links,
-            });
-          } catch (err) {
+          if (!parsed.fetch_content) {
+            const output = searchResults
+              .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
+              .join("\n\n");
             return {
-              url: r.url,
-              title: r.title,
-              content: `[Failed to fetch: ${(err as Error).message}]`,
-              metadata: {},
+              content: [{ type: "text", text: output || "No results found." }],
             };
           }
-        })
-      );
-      fetched.push(...(await Promise.all(fetchPromises)));
 
-      return {
-        content: [{ type: "text", text: formatForLLM(fetched) }],
-      };
+          const fetched: Awaited<ReturnType<typeof fetchUrl>>[] = [];
+          const fetchPromises = searchResults.slice(0, parsed.num_results).map((r) =>
+            fetchSemaphore.run(async () => {
+              try {
+                return await fetchUrl({
+                  url: r.url,
+                  maxLength: parsed.max_content_length,
+                  includeImages: parsed.include_images,
+                  includeLinks: parsed.include_links,
+                });
+              } catch (err) {
+                return {
+                  url: r.url,
+                  title: r.title,
+                  content: `[Failed to fetch: ${(err as Error).message}]`,
+                  metadata: {},
+                };
+              }
+            })
+          );
+          fetched.push(...(await Promise.all(fetchPromises)));
+
+          return {
+            content: [{ type: "text", text: formatForLLM(fetched) }],
+          };
+        }
+
+        throw new Error(`Unknown tool: ${name}`);
+      } catch (err) {
+        const message = (err as Error).message;
+        return {
+          content: [{ type: "text", text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    } finally {
+      endRequest();
     }
-
-    throw new Error(`Unknown tool: ${name}`);
-  } catch (err) {
-    const message = (err as Error).message;
-    return {
-      content: [{ type: "text", text: `Error: ${message}` }],
-      isError: true,
-    };
-  }
-});
+  })
+);
 
 // Cleanup on exit
 process.on("SIGINT", async () => {
+  await shutdownManager.shutdown();
   await browserManager.close();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
+  await shutdownManager.shutdown();
   await browserManager.close();
   process.exit(0);
 });

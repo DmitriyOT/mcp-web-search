@@ -4,7 +4,7 @@ export abstract class SearchProvider {
   abstract name: string;
   abstract search(options: SearchOptions): Promise<SearchResult[]>;
 
-  protected isAvailable(): boolean {
+  isAvailable(): boolean {
     return true;
   }
 }

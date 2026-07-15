@@ -54,6 +54,28 @@ export const configSchema = z.object({
   minDelay: positiveInt(500),
   maxDelay: positiveInt(3000),
   maxConcurrent: positiveInt(2),
+  scrollToBottom: booleanFromEnv(true),
+
+  // Ethics / safety
+  robotsTxtEnabled: booleanFromEnv(true),
+  allowedDomains: z
+    .string()
+    .default("")
+    .transform((val) =>
+      val
+        .split(",")
+        .map((d) => d.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  blockedDomains: z
+    .string()
+    .default("")
+    .transform((val) =>
+      val
+        .split(",")
+        .map((d) => d.trim().toLowerCase())
+        .filter(Boolean)
+    ),
 
   // Debug / advanced
   allowInsecureBrowserFlags: booleanFromEnv(false),

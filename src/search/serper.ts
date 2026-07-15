@@ -6,7 +6,7 @@ import { SearchProvider } from "./base.js";
 export class SerperProvider extends SearchProvider {
   name = "serper";
 
-  protected isAvailable(): boolean {
+  isAvailable(): boolean {
     return !!config.serperApiKey;
   }
 

@@ -1,3 +1,5 @@
+import { config } from "../config.js";
+
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
 const PRIVATE_IP_PATTERNS = [
@@ -28,7 +30,22 @@ export function isAllowedUrl(input: string): boolean {
     return false;
   }
 
-  return !PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(hostname));
+  if (PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(hostname))) {
+    return false;
+  }
+
+  if (config.blockedDomains.some((d) => hostname === d || hostname.endsWith(`.${d}`))) {
+    return false;
+  }
+
+  if (
+    config.allowedDomains.length > 0 &&
+    !config.allowedDomains.some((d) => hostname === d || hostname.endsWith(`.${d}`))
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export function normalizeUrl(input: string): string {

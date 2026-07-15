@@ -7,8 +7,8 @@ MCP server for web search with results optimized for LLMs and advanced bot-detec
 - **Search**: DuckDuckGo (no API key), Serper.dev, Bing Web Search
 - **Content extraction**: Headless browser with stealth injection and BrowserContext isolation
 - **Anti-detection**: Dynamic fingerprint generation (viewport, UA, locale, timezone), human-like behavior, proxy support
-- **LLM formatting**: Clean markdown via Turndown, metadata, structured data, links, images
-- **Robustness**: Retry with exponential backoff, circuit breaker per provider, concurrency limiting, persistent cache
+- **LLM formatting**: Clean markdown via Turndown, metadata, structured data, links, images, PDF text extraction
+- **Robustness**: Retry with exponential backoff, circuit breaker per provider, concurrency limiting, persistent cache, graceful shutdown
 
 ## Installation
 
@@ -43,12 +43,18 @@ CACHE_TTL=300
 MIN_DELAY=500
 MAX_DELAY=3000
 MAX_CONCURRENT=2
+SCROLL_TO_BOTTOM=true
 
 # Optional persistent cache directory
 CACHE_DIR=./cache
 
 # Logging
 LOG_LEVEL=info
+
+# Ethics / safety
+ROBOTS_TXT_ENABLED=true
+ALLOWED_DOMAINS=
+BLOCKED_DOMAINS=
 
 # Debug only — weakens browser security
 ALLOW_INSECURE_BROWSER_FLAGS=false
@@ -97,6 +103,14 @@ Search and automatically fetch top-N results.
 }
 ```
 
+### `health_check`
+
+Check provider availability and circuit breaker state.
+
+```json
+{}
+```
+
 ## Claude Desktop Integration
 
 ```json
@@ -125,6 +139,8 @@ The server uses a layered approach:
 6. **Fallback chain** — premium APIs first, falls back to DuckDuckGo
 7. **Circuit breaker** — temporarily disables failing providers
 8. **Retry & rate limiting** — exponential backoff, bounded concurrency
+9. **Graceful shutdown** — waits for active requests on SIGINT/SIGTERM
+10. **Robots.txt respect** — honors site crawl rules (can be disabled)
 
 ## Development
 

@@ -20,9 +20,9 @@ describe("PersistentCache", () => {
   it("expires values", async () => {
     dir = mkdtempSync(join(tmpdir(), "mcp-cache-"));
     const cache = new PersistentCache<{ data: string }>(dir);
-    await cache.set("key", { data: "value" }, 10);
+    await cache.set("key", { data: "value" }, 50);
     assert.deepEqual(await cache.get("key"), { data: "value" });
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 100));
     assert.equal(await cache.get("key"), undefined);
   });
 

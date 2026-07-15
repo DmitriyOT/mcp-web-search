@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVELS: Record<LogLevel, number> = {
@@ -13,8 +16,22 @@ function levelFromEnv(): LogLevel {
   return "info";
 }
 
+export interface LogContext {
+  requestId?: string;
+}
+
+const logContext = new AsyncLocalStorage<LogContext>();
+
 class Logger {
   private level = levelFromEnv();
+
+  runWithRequestId<T>(fn: () => T): T {
+    return logContext.run({ requestId: randomUUID() }, fn);
+  }
+
+  getRequestId(): string | undefined {
+    return logContext.getStore()?.requestId;
+  }
 
   private shouldLog(level: LogLevel): boolean {
     return LEVELS[level] >= LEVELS[this.level];
@@ -22,9 +39,11 @@ class Logger {
 
   private log(level: LogLevel, message: string, meta?: Record<string, unknown>) {
     if (!this.shouldLog(level)) return;
+    const context = logContext.getStore();
     const entry = {
       level,
       message,
+      ...(context?.requestId ? { requestId: context.requestId } : {}),
       ...(meta ? { meta } : {}),
     };
     // Use stderr to avoid polluting stdio MCP transport

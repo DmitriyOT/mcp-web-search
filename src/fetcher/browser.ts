@@ -140,6 +140,20 @@ export class BrowserManager {
     });
   }
 
+  async scrollToBottom(page: Page) {
+    await page.evaluate(async () => {
+      const getHeight = () => document.documentElement.scrollHeight;
+      let attempts = 0;
+      while (attempts < 5) {
+        const lastHeight = getHeight();
+        window.scrollTo(0, lastHeight);
+        await new Promise<void>((r) => setTimeout(r, 500));
+        if (getHeight() === lastHeight) break;
+        attempts++;
+      }
+    });
+  }
+
   async close() {
     if (this.browser) {
       await this.browser.close();
