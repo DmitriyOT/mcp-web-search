@@ -11,13 +11,20 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
+    "test": "node --test --import tsx tests/**/*.test.ts",
     "prepare": "npm run build"
   },
-  "keywords": ["mcp", "web-search", "puppeteer", "stealth"],
+  "keywords": [
+    "mcp",
+    "web-search",
+    "puppeteer",
+    "stealth"
+  ],
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "dotenv": "^16.4.5",
+    "linkedom": "^0.18.13",
     "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
@@ -29,6 +36,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/turndown": "^5.0.5",
+    "tsx": "^4.23.1",
     "typescript": "^5.6.0"
   }
 }

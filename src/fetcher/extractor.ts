@@ -1,111 +1,117 @@
+import { parseHTML } from "linkedom";
+import TurndownService from "turndown";
 import type { FetchedContent } from "../types.js";
 
-export function extractFromHtml(url: string, html: string): FetchedContent {
-  const title = extractTag(html, "title") || extractTag(html, "h1") || url;
-  const description = extractMeta(html, "description") || extractMeta(html, "og:description");
-  const author = extractMeta(html, "author") || extractMeta(html, "article:author");
-  const keywords = extractMeta(html, "keywords");
-  const date = extractMeta(html, "article:published_time") || extractMeta(html, "datePublished");
+const turndown = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+});
 
-  // Remove scripts, styles, nav, footer, aside, header
-  let cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-    .replace(/<aside[\s\S]*?<\/aside>/gi, "")
-    .replace(/<header[\s\S]*?<\/header>/gi, "")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
+// Keep only meaningful elements
+turndown.remove(["script", "style", "noscript", "nav", "footer", "aside", "header"]);
 
-  // Try to get article/main content first
-  let contentHtml = extractTagContent(cleaned, "article") ||
-    extractTagContent(cleaned, "main") ||
-    extractTagContent(cleaned, "[role='main']") ||
-    cleaned;
+export interface ExtractOptions {
+  includeImages?: boolean;
+  maxLength?: number;
+}
 
-  // Convert to plain text
-  let text = htmlToText(contentHtml);
+export function extractFromHtml(
+  url: string,
+  html: string,
+  options: ExtractOptions = {}
+): FetchedContent {
+  const {
+    document,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    window,
+  } = parseHTML(html);
+
+  const title =
+    document.querySelector("title")?.textContent?.trim() ||
+    document.querySelector("h1")?.textContent?.trim() ||
+    url;
+
+  const getMeta = (name: string): string | undefined => {
+    const selectors = [
+      `meta[name="${name}"]`,
+      `meta[property="${name}"]`,
+      `meta[http-equiv="${name}"]`,
+    ];
+    for (const selector of selectors) {
+      const value = document.querySelector(selector)?.getAttribute("content");
+      if (value) return value.trim();
+    }
+    return undefined;
+  };
+
+  const description = getMeta("description") || getMeta("og:description");
+  const author = getMeta("author") || getMeta("article:author");
+  const keywords = getMeta("keywords");
+  const date =
+    getMeta("article:published_time") ||
+    getMeta("datePublished") ||
+    getMeta("published_time");
+
+  // Prefer article/main content, fall back to body
+  const contentRoot =
+    document.querySelector("article") ||
+    document.querySelector("main") ||
+    document.querySelector('[role="main"]') ||
+    document.body;
+
+  let content = contentRoot ? turndown.turndown(contentRoot.innerHTML).trim() : "";
+
+  if (options.includeImages) {
+    const images = collectImages(contentRoot, url);
+    if (images.length) {
+      content += "\n\n## Images\n\n" + images.map((img) => `- ${img}`).join("\n");
+    }
+  }
 
   // Clean up whitespace
-  text = text
+  content = content
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]+/g, " ")
     .trim();
 
+  if (options.maxLength && content.length > options.maxLength) {
+    content = content.slice(0, options.maxLength).trim() + "\n\n[Content truncated...]";
+  }
+
+  window?.close?.();
+
   return {
     url,
-    title: stripTags(title),
-    content: text,
+    title,
+    content,
     metadata: {
-      description: description ? stripTags(description) : undefined,
-      author: author ? stripTags(author) : undefined,
-      keywords: keywords ? stripTags(keywords) : undefined,
-      date: date ? stripTags(date).split("T")[0] : undefined,
+      description,
+      author,
+      keywords,
+      date: date ? date.split("T")[0] : undefined,
     },
   };
 }
 
-function extractTag(html: string, tag: string): string | undefined {
-  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
-  const match = regex.exec(html);
-  return match?.[1];
-}
-
-function extractMeta(html: string, name: string): string | undefined {
-  const regex = new RegExp(
-    `<meta[^>]+(?:name|property)=["']${escapeRegex(name)}["'][^>]+content=["']([^"']*)["']`,
-    "i"
-  );
-  let m = regex.exec(html);
-  if (!m) {
-    const altRegex = new RegExp(
-      `<meta[^>]+content=["']([^"']*)["'][^>]+(?:name|property)=["']${escapeRegex(name)}["']`,
-      "i"
-    );
-    m = altRegex.exec(html);
-  }
-  return m?.[1];
-}
-
-function extractTagContent(html: string, selector: string): string | undefined {
-  if (selector.startsWith("[")) {
-    const attr = selector.slice(1, -1);
-    const regex = new RegExp(`<[^>]+${escapeRegex(attr)}[^>]*>([\\s\\S]*?)<\\/[^>]+>`, "i");
-    const m = regex.exec(html);
-    return m?.[1];
-  }
-  return extractTag(html, selector);
-}
-
-function htmlToText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<li>/gi, "\n- ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#x27;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#\d+;/g, (m) => {
-      try {
-        return String.fromCharCode(parseInt(m.slice(2, -1), 10));
-      } catch {
-        return m;
+function collectImages(root: Element | null, pageUrl: string): string[] {
+  if (!root) return [];
+  const seen = new Set<string>();
+  const images: string[] = [];
+  for (const img of Array.from(root.querySelectorAll("img[src]"))) {
+    const src = img.getAttribute("src");
+    if (!src) continue;
+    try {
+      const absolute = new URL(src, pageUrl).toString();
+      if (!seen.has(absolute)) {
+        seen.add(absolute);
+        images.push(absolute);
       }
-    });
-}
-
-function stripTags(html: string): string {
-  return html.replace(/<[^>]+>/g, "").trim();
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } catch {
+      // ignore malformed URLs
+    }
+  }
+  return images;
 }
 
 export function formatForLLM(results: FetchedContent[]): string {

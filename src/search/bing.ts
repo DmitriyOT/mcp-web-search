@@ -1,11 +1,12 @@
 import { SearchProvider } from "./base.js";
 import { config } from "../config.js";
+import { withRetry } from "../utils/index.js";
 import type { SearchResult, SearchOptions } from "../types.js";
 
 export class BingProvider extends SearchProvider {
   name = "bing";
 
-  isAvailable(): boolean {
+  protected isAvailable(): boolean {
     return !!config.bingApiKey;
   }
 
@@ -14,6 +15,18 @@ export class BingProvider extends SearchProvider {
       throw new Error("Bing API key not configured");
     }
 
+    return withRetry(async () => this.doSearch(options), {
+      retries: 2,
+      minDelay: config.minDelay,
+      maxDelay: config.maxDelay,
+      shouldRetry: (err) => {
+        const status = err.message.match(/(\d{3})/)?.[1];
+        return status === "429" || status === "503" || status === "502";
+      },
+    });
+  }
+
+  private async doSearch(options: SearchOptions): Promise<SearchResult[]> {
     const num = Math.min(options.numResults || 10, 50);
     const url = new URL("https://api.bing.microsoft.com/v7.0/search");
     url.searchParams.set("q", options.query);
@@ -22,9 +35,13 @@ export class BingProvider extends SearchProvider {
     url.searchParams.set("responseFilter", "Webpages");
 
     if (options.recencyDays) {
-      const date = new Date();
-      date.setDate(date.getDate() - options.recencyDays);
-      url.searchParams.set("freshness", `DateRange_${date.toISOString().split("T")[0]}..`);
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - options.recencyDays);
+      url.searchParams.set(
+        "freshness",
+        `${start.toISOString().split("T")[0]}..${end.toISOString().split("T")[0]}`
+      );
     }
 
     const res = await fetch(url.toString(), {
@@ -37,7 +54,7 @@ export class BingProvider extends SearchProvider {
       throw new Error(`Bing search failed: ${res.status}`);
     }
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       webPages?: {
         value: Array<{
           name: string;

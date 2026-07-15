@@ -11,8 +11,11 @@ import { z } from "zod";
 import { SearchAggregator } from "./search/aggregator.js";
 import { fetchUrl, formatForLLM } from "./fetcher/index.js";
 import { browserManager } from "./fetcher/browser.js";
+import { config } from "./config.js";
+import { Semaphore } from "./utils/index.js";
 
 const searchAggregator = new SearchAggregator();
+const fetchSemaphore = new Semaphore(config.maxConcurrent);
 
 // Schemas
 const WebSearchSchema = z.object({
@@ -33,6 +36,7 @@ const SearchAndFetchSchema = z.object({
   num_results: z.number().int().min(1).max(20).optional().default(5),
   fetch_content: z.boolean().optional().default(true),
   max_content_length: z.number().int().optional().default(5000),
+  include_images: z.boolean().optional().default(false),
 });
 
 // Tools definition
@@ -77,6 +81,7 @@ const TOOLS: Tool[] = [
         num_results: { type: "number", description: "Number of results to fetch (1-20)", default: 5 },
         fetch_content: { type: "boolean", description: "Whether to fetch full page content", default: true },
         max_content_length: { type: "number", description: "Max length per page", default: 5000 },
+        include_images: { type: "boolean", description: "Include image references from pages", default: false },
       },
       required: ["query"],
     },
@@ -157,22 +162,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       const fetched: Awaited<ReturnType<typeof fetchUrl>>[] = [];
-      for (const r of searchResults.slice(0, parsed.num_results)) {
-        try {
-          const content = await fetchUrl({
-            url: r.url,
-            maxLength: parsed.max_content_length,
-          });
-          fetched.push(content);
-        } catch (err) {
-          fetched.push({
-            url: r.url,
-            title: r.title,
-            content: `[Failed to fetch: ${(err as Error).message}]`,
-            metadata: {},
-          });
-        }
-      }
+      const fetchPromises = searchResults.slice(0, parsed.num_results).map((r) =>
+        fetchSemaphore.run(async () => {
+          try {
+            return await fetchUrl({
+              url: r.url,
+              maxLength: parsed.max_content_length,
+              includeImages: parsed.include_images,
+            });
+          } catch (err) {
+            return {
+              url: r.url,
+              title: r.title,
+              content: `[Failed to fetch: ${(err as Error).message}]`,
+              metadata: {},
+            };
+          }
+        })
+      );
+      fetched.push(...(await Promise.all(fetchPromises)));
 
       return {
         content: [{ type: "text", text: formatForLLM(fetched) }],

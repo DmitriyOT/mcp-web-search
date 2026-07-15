@@ -1,31 +1,75 @@
 import dotenv from "dotenv";
+import { z } from "zod";
 
 dotenv.config();
 
-export const config = {
+const positiveInt = (defaultValue: number) =>
+  z
+    .string()
+    .transform((val) => {
+      const parsed = Number.parseInt(val, 10);
+      if (Number.isNaN(parsed) || parsed <= 0) {
+        throw new Error(`Expected positive integer, got "${val}"`);
+      }
+      return parsed;
+    })
+    .default(String(defaultValue));
+
+const booleanFromEnv = (defaultValue: boolean) =>
+  z
+    .string()
+    .default(String(defaultValue))
+    .transform((v) => String(v).toLowerCase() !== "false");
+
+export const configSchema = z.object({
   // Search providers
-  serperApiKey: process.env.SERPER_API_KEY || "",
-  bingApiKey: process.env.BING_API_KEY || "",
-  
+  serperApiKey: z.string().default(""),
+  bingApiKey: z.string().default(""),
+
   // Anti-detect
-  stealthEnabled: process.env.STEALTH_ENABLED !== "false",
-  headless: process.env.HEADLESS !== "false",
-  proxyList: (process.env.PROXY_LIST || "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean),
-  
+  stealthEnabled: booleanFromEnv(true),
+  headless: booleanFromEnv(true),
+  proxyList: z
+    .string()
+    .default("")
+    .transform((val) =>
+      val
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean)
+    ),
+
   // Browser
-  userDataDir: process.env.USER_DATA_DIR || undefined,
-  
+  userDataDir: z.string().optional(),
+
   // Limits
-  maxResults: parseInt(process.env.MAX_RESULTS || "10", 10),
-  maxContentLength: parseInt(process.env.MAX_CONTENT_LENGTH || "8000", 10),
-  requestTimeout: parseInt(process.env.REQUEST_TIMEOUT || "30000", 10),
-  cacheTtl: parseInt(process.env.CACHE_TTL || "300", 10),
-  
+  maxResults: positiveInt(10),
+  maxContentLength: positiveInt(8000),
+  requestTimeout: positiveInt(30000),
+  cacheTtl: positiveInt(300),
+
   // Behavior
-  minDelay: parseInt(process.env.MIN_DELAY || "500", 10),
-  maxDelay: parseInt(process.env.MAX_DELAY || "3000", 10),
-  maxConcurrent: parseInt(process.env.MAX_CONCURRENT || "2", 10),
-} as const;
+  minDelay: positiveInt(500),
+  maxDelay: positiveInt(3000),
+  maxConcurrent: positiveInt(2),
+
+  // Debug / advanced
+  allowInsecureBrowserFlags: booleanFromEnv(false),
+});
+
+export type Config = z.infer<typeof configSchema>;
+
+function envToCamelCase(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const result: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const camelKey = key.toLowerCase().replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    result[camelKey] = value;
+  }
+  return result;
+}
+
+export function parseConfig(env: Record<string, string | undefined>): Config {
+  return configSchema.parse(envToCamelCase(env));
+}
+
+export const config = parseConfig(process.env);

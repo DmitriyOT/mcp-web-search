@@ -1,10 +1,20 @@
 import { SearchProvider } from "./base.js";
+import { config } from "../config.js";
+import { withRetry, isAllowedUrl } from "../utils/index.js";
 import type { SearchResult, SearchOptions } from "../types.js";
 
 export class DuckDuckGoProvider extends SearchProvider {
   name = "duckduckgo";
 
   async search(options: SearchOptions): Promise<SearchResult[]> {
+    return withRetry(async () => this.doSearch(options), {
+      retries: 2,
+      minDelay: config.minDelay,
+      maxDelay: config.maxDelay,
+    });
+  }
+
+  private async doSearch(options: SearchOptions): Promise<SearchResult[]> {
     const num = Math.min(options.numResults || 10, 30);
     const url = new URL("https://html.duckduckgo.com/html/");
     url.searchParams.set("q", options.query);
@@ -40,17 +50,11 @@ export class DuckDuckGoProvider extends SearchProvider {
     while ((m = linkRegex.exec(html)) !== null && links.length < limit) {
       const rawUrl = m[1];
       const title = this.stripTags(m[2]).trim();
-      let url = rawUrl;
-      if (url.startsWith("//")) url = "https:" + url;
-      else if (url.startsWith("/")) url = "https://duckduckgo.com" + url;
-      
-      // DuckDuckGo often wraps external links
-      const ddgu = new URL(url, "https://duckduckgo.com");
-      if (ddgu.hostname === "duckduckgo.com" && ddgu.searchParams.has("uddg")) {
-        url = decodeURIComponent(ddgu.searchParams.get("uddg")!);
+      const decoded = this.decodeDuckDuckGoUrl(rawUrl);
+
+      if (decoded && isAllowedUrl(decoded)) {
+        links.push({ url: decoded, title });
       }
-      
-      links.push({ url, title });
     }
 
     const snippets: string[] = [];
@@ -68,6 +72,23 @@ export class DuckDuckGoProvider extends SearchProvider {
     }
 
     return results;
+  }
+
+  private decodeDuckDuckGoUrl(rawUrl: string): string | undefined {
+    let url = rawUrl;
+    if (url.startsWith("//")) url = "https:" + url;
+    else if (url.startsWith("/")) url = "https://duckduckgo.com" + url;
+
+    try {
+      const ddgu = new URL(url, "https://duckduckgo.com");
+      if (ddgu.hostname === "duckduckgo.com" && ddgu.searchParams.has("uddg")) {
+        const decoded = decodeURIComponent(ddgu.searchParams.get("uddg")!);
+        return decoded;
+      }
+      return url;
+    } catch {
+      return undefined;
+    }
   }
 
   private stripTags(html: string): string {

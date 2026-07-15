@@ -1,4 +1,5 @@
-import puppeteerExtra from "puppeteer-extra";
+import puppeteer from "puppeteer";
+import { addExtra, type VanillaPuppeteer } from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import UserPreferencesPlugin from "puppeteer-extra-plugin-user-preferences";
 import UserDataDirPlugin from "puppeteer-extra-plugin-user-data-dir";
@@ -6,7 +7,7 @@ import type { Browser, Page } from "puppeteer";
 import { config } from "../config.js";
 import { getRandomFingerprint, type Fingerprint } from "../anti-detect/fingerprints.js";
 
-const pptr = puppeteerExtra as any;
+const pptr = addExtra(puppeteer as unknown as VanillaPuppeteer);
 
 // Apply stealth plugins
 if (config.stealthEnabled) {
@@ -47,20 +48,25 @@ export class BrowserManager {
       "--disable-gpu",
       "--window-size=1920,1080",
       "--disable-blink-features=AutomationControlled",
-      "--disable-web-security",
-      "--disable-features=IsolateOrigins,site-per-process",
     ];
+
+    if (config.allowInsecureBrowserFlags) {
+      args.push(
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process"
+      );
+    }
 
     if (config.proxyList.length > 0) {
       const proxy = config.proxyList[Math.floor(Math.random() * config.proxyList.length)];
       args.push(`--proxy-server=${proxy}`);
     }
 
-    this.browser = (await pptr.launch({
+    this.browser = await pptr.launch({
       headless: config.headless,
       args,
       defaultViewport: null,
-    })) as Browser;
+    });
 
     return this.browser;
   }
@@ -80,8 +86,7 @@ export class BrowserManager {
 
     // Set locale / timezone
     await page.evaluateOnNewDocument((fingerprint: Fingerprint) => {
-      const g = globalThis as any;
-      const nav = g.navigator;
+      const nav = navigator as unknown as Record<string, unknown>;
 
       Object.defineProperty(nav, "platform", {
         get: () => fingerprint.platform,
@@ -110,10 +115,16 @@ export class BrowserManager {
       });
 
       // Override permissions
-      const originalQuery = nav.permissions.query;
-      nav.permissions.query = async (parameters: any) => {
-        if (parameters.name === "notifications" || parameters.name === "clipboard-read" || parameters.name === "clipboard-write") {
-          return { state: "prompt", onchange: null, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true };
+      const permissions = nav.permissions as Permissions;
+      const originalQuery = permissions.query.bind(permissions);
+      permissions.query = async (parameters: PermissionDescriptor) => {
+        const name = (parameters as { name: string }).name;
+        if (
+          name === "notifications" ||
+          name === "clipboard-read" ||
+          name === "clipboard-write"
+        ) {
+          return { state: "prompt", onchange: null, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true } as unknown as PermissionStatus;
         }
         return originalQuery(parameters);
       };
@@ -127,7 +138,7 @@ export class BrowserManager {
       });
 
       // Chrome runtime
-      g.chrome = {
+      (globalThis as unknown as Record<string, unknown>).chrome = {
         runtime: {
           OnInstalledReason: { CHROME_UPDATE: "chrome_update", UPDATE: "update", INSTALL: "install" },
           OnRestartRequiredReason: { APP_UPDATE: "app_update", OS_UPDATE: "os_update", PERIODIC: "periodic" },
@@ -166,9 +177,8 @@ export class BrowserManager {
       const steps = Math.floor(Math.random() * 5 + 3);
       const step = total / steps;
       for (let i = 0; i < steps; i++) {
-        // @ts-ignore
         window.scrollBy(0, step);
-        await new Promise((r: any) => setTimeout(r, Math.random() * 200 + 50));
+        await new Promise<void>((r) => setTimeout(r, Math.random() * 200 + 50));
       }
     });
   }

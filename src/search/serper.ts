@@ -1,11 +1,12 @@
 import { SearchProvider } from "./base.js";
 import { config } from "../config.js";
+import { withRetry } from "../utils/index.js";
 import type { SearchResult, SearchOptions } from "../types.js";
 
 export class SerperProvider extends SearchProvider {
   name = "serper";
 
-  isAvailable(): boolean {
+  protected isAvailable(): boolean {
     return !!config.serperApiKey;
   }
 
@@ -14,6 +15,18 @@ export class SerperProvider extends SearchProvider {
       throw new Error("Serper API key not configured");
     }
 
+    return withRetry(async () => this.doSearch(options), {
+      retries: 2,
+      minDelay: config.minDelay,
+      maxDelay: config.maxDelay,
+      shouldRetry: (err) => {
+        const status = err.message.match(/(\d{3})/)?.[1];
+        return status === "429" || status === "503" || status === "502";
+      },
+    });
+  }
+
+  private async doSearch(options: SearchOptions): Promise<SearchResult[]> {
     const num = Math.min(options.numResults || 10, 100);
     const res = await fetch("https://google.serper.dev/search", {
       method: "POST",
@@ -33,7 +46,7 @@ export class SerperProvider extends SearchProvider {
       throw new Error(`Serper search failed: ${res.status}`);
     }
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       organic?: Array<{
         title: string;
         link: string;
